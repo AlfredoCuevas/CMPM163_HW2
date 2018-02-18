@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CMPM163-HW2-PartA</title>
+    <style>
+        body { margin: 0; }
+    </style>
+</head>
+
+<body>
+    <script src="js/three.js"></script>
+    <script src="js/OrbitControls.js"></script>
+    <script src="js/dat.gui.min.js"></script>
+
+    <script id="skyboxVS" type="x-shader/x-vertex"> // SkyBox Shaders---------------------------------------------------------------------------------
+        uniform mat4 modelMatrix;
+        uniform mat4 viewMatrix;
+        uniform mat4 projectionMatrix;
+
+        attribute vec3 position;
+
+        varying vec3 vWorldPosition;
+
+        void main(){
+            vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+            vWorldPosition = worldPosition.xyz;
+
+            vec4 p = viewMatrix * modelMatrix * vec4(position, 1.0);
+            gl_Position = projectionMatrix * p;
+        }
+    </script>
+
+    <script id="skyboxFS" type="x-shader/x-fragment">
+        precision mediump float;
+
+        uniform samplerCube tCube;
+        uniform samplerCube tCubeAngus;
+        uniform float mixVal;
+        varying vec3 vWorldPosition;
+
+        void main(){
+            //vec3 sky = mix( tCube, tCubeAngus, mixVal);
+            vec4 mix1 = textureCube( tCube, vec3( vWorldPosition ) );
+            vec4 mix2 = textureCube( tCubeAngus, vec3( vWorldPosition ) );
+            gl_FragColor = mix( mix1, mix2, mixVal);
+        }
+    </script>
+
+
+    <script id="heightMapVS" type="x-shader/x-vertex"> //HeightMap Shaders ---------------------Used for creating terrain-------------------------------------
+        uniform mat4 modelMatrix;
+        uniform mat4 viewMatrix;
+        uniform mat4 projectionMatrix;
+
+        attribute vec3 position;
+        attribute vec2 uv;
+        attribute vec3 normal;
+
+        uniform sampler2D tPic;
+        uniform sampler2D tPic2;
+        uniform float heightMapMix;
+        uniform float displaceAmt;
+
+        varying float vDisplace;
+        varying vec2 vUv;
+
+        precision mediump float;
+
+        void main(){
+            vUv = uv;
+
+            vec4 clr = texture2D(tPic, uv);
+            vec4 clr2 = texture2D(tPic2, uv);
+            vec4 clr3 = mix(clr, clr2, heightMapMix);
+
+            vDisplace = clr3.r * displaceAmt;
+            vec3 newPosition = (position.xyz + normal.xyz * vDisplace).xyz;
+
+            gl_Position = projectionMatrix * viewMatrix * modelMatrix * vec4(newPosition, 1.0);
+        }
+    </script>
+
+    <script id="heightMapFS" type="x-shader/x-fragment">
+        precision mediump float;
+
+        uniform sampler2D tGrass, tSnow, tHill;
+
+        varying vec2 vUv;
+        varying float vDisplace;
+
+        void main(){
+            vec4 grass = texture2D(tGrass, vUv);
+            vec4 snow = texture2D(tSnow, vUv);
+            vec4 hill = texture2D(tHill, vUv);
+
+            float zOffset = vDisplace;
+
+            vec4 mix1 = mix(grass, hill, min(1.0, zOffset*8.0));
+            vec4 mix2 = max(vec4(1.0), mix(hill, snow, zOffset) * 1.5);
+            vec4 mix3 = mix(mix1, mix2, zOffset);
+
+            gl_FragColor = vec4(mix3.rgb, 1.0);
+        }
+    </script>
+
+    <script id="environmentMapVS" type="x-shader/x-vertex"> //EnvironmentMap Shaders -------------------Used For Water Plane----------------------------------
+        uniform mat4 modelMatrix;
+        uniform mat4 viewMatrix;
+        uniform mat4 projectionMatrix;
+
+        uniform vec3 cameraPosition;
+
+        attribute vec3 position;
+        attribute vec3 normal;
+
+        varying vec3 vI;
+        varying vec3 vWorldNormal;
+
+        void main(){
+            vec4 mvPosition = viewMatrix * modelMatrix * vec4( position, 1.0 );
+            vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+
+            vWorldNormal = normalize( mat3(modelMatrix[0].xyz, modelMatrix[1].xyz, modelMatrix[2].xyz ) * normal);
+
+            vI = worldPosition.xyz - cameraPosition;
+
+            gl_Position = projectionMatrix * mvPosition;
+        }
+    </script>
+
+    <script id="environmentMapFS" type="x-shader/x-fragment">
+        precision mediump float;
+
+        uniform samplerCube tCube;
+        uniform samplerCube tCubeAngus;
+        uniform float mixValSky;
+        uniform float mixVal;
+
+        varying vec3 vI, vWorldNormal;
+
+        void main(){
+            vec3 reflection = reflect(vI, vWorldNormal);
+            vec4 envColor = textureCube(tCube, vec3( -reflection.x, reflection.yz));
+            vec4 envColor2 = textureCube(tCubeAngus, vec3( -reflection.x, reflection.yz));
+            vec4 envColorMix = mix(envColor, envColor2, mixValSky);
+            gl_FragColor = vec4( mix(vec4(0.5, 0.5, 1.0, 1.0), envColorMix, mixVal));
+        }
+    </script>
+
+    <!-- >Main javaScript code ******************************************************************* </!-->
+    <script>
+        // variables
+        var renderer, scene, camera;
+        var options, gui = new dat.GUI( { width: 350} );
+
+        var skyMesh, heightMapMesh, waterMesh;
+
+        var sb_vs = document.getElementById( 'skyboxVS' ).textContent;
+        var sb_fs = document.getElementById( 'skyboxFS' ).textContent;
+        var hm_vs = document.getElementById( 'heightMapVS' ).textContent;
+        var hm_fs = document.getElementById( 'heightMapFS' ).textContent;
+        var em_vs = document.getElementById( 'environmentMapVS' ).textContent;
+        var em_fs = document.getElementById( 'environmentMapFS' ).textContent;
+
+        var textureHM = new THREE.TextureLoader().load( './textures/heightMap2.jpg' );
+        var textureHM2 = new THREE.TextureLoader().load('./textures/angus.jpg');
+        var texture2 = new THREE.TextureLoader().load(  './textures/grass.png' );
+        var texture3 = new THREE.TextureLoader().load(  './textures/snow.jpg' );
+        var texture4 = new THREE.TextureLoader().load(  './textures/hill.jpg' );
+
+
+        init();
+        update();
+
+        function init(){  
+
+            //renderer / Scene / Camera
+            renderer = new THREE.WebGLRenderer();
+            renderer.setClearColor( 0x999999 );
+            renderer.setPixelRatio( window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            window.addEventListener( 'resize', onWindowResize, false);
+
+            scene = new THREE.Scene();
+
+            camera = new THREE.PerspectiveCamera(50, window.innerWidth/window.innerHeight, 0.1, 2000);
+            camera.position.set(0, 0, 5);
+
+            var controls = new THREE.OrbitControls( camera );
+            controls.update();
+
+            // adding user gui options------------------------------------------------------
+            options = {
+                DisplaceAmount: 0.99,
+                WaterReflect: 0.5,
+                RotateVal: 0.0,
+                HeightMapMix: 0.01,
+                SkyMix: 0.01,
+            };
+            gui.add( options, "DisplaceAmount", 0.0, 1.0);
+            gui.add( options, "WaterReflect", 0.0 , 1.0);
+            gui.add( options, "RotateVal",    0.0 , 0.005);
+            gui.add( options, "HeightMapMix", 0 , 1);
+            gui.add( options, "SkyMix", 0.0, 1.0);
+
+
+            // SkyBox Material---------------------------------------------------------------
+            var cubeMap = new THREE.CubeTextureLoader().setPath("./IceRiver/").load([
+                    'posx.jpg',
+                    'negx.jpg',
+                    'posy.jpg',
+                    'negy.jpg',
+                    'posz.jpg',
+                    'negz.jpg'
+                ]);
+            var cubeMapAngus = new THREE.CubeTextureLoader().setPath("./textures/").load([
+                    'angus.jpg',
+                    'angus.jpg',
+                    'angus.jpg',
+                    'angus.jpg',
+                    'angus.jpg',
+                    'angus.jpg'
+                ]);
+
+            var uniforms = {
+                tCube: { type: "t", value: cubeMap },
+                tCubeAngus: { type: "t", value: cubeMapAngus},
+                mixVal: { type: "f", value: options.SkyMix}
+            };
+
+            var material = new THREE.RawShaderMaterial({
+                uniforms: uniforms,
+                vertexShader: sb_vs,
+                fragmentShader: sb_fs
+            });
+
+            material.deepWrite = false;
+            material.side = THREE.BackSide;
+
+            // SkyBox Geometry
+            var geometry = new THREE.BoxGeometry( 2000, 2000, 2000);
+
+            skyMesh = new THREE.Mesh(geometry, material);
+            scene.add(skyMesh);
+
+            // HeightMap Material-----------------------------------------------------------
+
+            var uniforms2 = {
+                displaceAmt: { type: "f", value: options.DisplaceAmount},
+                tPic: { type: "t", value: textureHM},
+                tPic2: {type: "t", value: textureHM2},
+                heightMapMix: {type: "f", value: options.HeightMapMix},
+                tGrass: { type: "t", value: texture2},
+                tSnow: { type: "t", value: texture3},
+                tHill: { type: "t", value: texture4},
+            };
+
+            var material2 = new THREE.RawShaderMaterial({
+                uniforms: uniforms2,
+                vertexShader: hm_vs,
+                fragmentShader: hm_fs,
+            });
+
+            // HeightMap Geometry
+            var geometry2 = new THREE.PlaneGeometry(5, 5, 300, 300 );
+
+            heightMapMesh = new THREE.Mesh(geometry2, material2);
+            heightMapMesh.material.side = THREE.DoubleSide;
+            heightMapMesh.rotateX(-Math.PI/3);
+            scene.add(heightMapMesh);
+
+            // Water Geometry & Material------------------------------------------------------
+            var waterPlane = new THREE.PlaneGeometry(5, 5, 300, 300);
+
+            var uniforms3 = {
+                tCube: { type: "t", value: cubeMap },
+                tCubeAngus: { type: "t", value: cubeMapAngus },
+                mixVal: { type: "f", value: options.WaterReflect },
+                mixValSky: {type: "f", value: options.SkyMix },
+            };
+
+            var material3 = new THREE.RawShaderMaterial({
+                uniforms: uniforms3,
+                vertexShader: em_vs,
+                fragmentShader: em_fs
+            })
+
+            waterMesh = new THREE.Mesh(waterPlane, material3);
+
+            //waterMesh.material.side = THREE.DoubleSide;
+            waterMesh.translateY(0.05);
+            waterMesh.rotateX(-Math.PI/3);
+            scene.add(waterMesh);
+
+        }
+
+        // update
+        function update(){
+
+            requestAnimationFrame(update);
+            render();
+
+        }
+
+        function render(){
+
+            var time = performance.now();
+            
+
+            //adding the gui options
+            skyMesh.material.uniforms.mixVal.value = options.SkyMix;
+            waterMesh.material.uniforms.mixVal.value = options.WaterReflect;
+            waterMesh.material.uniforms.mixValSky.value = options.SkyMix;
+            heightMapMesh.material.uniforms.displaceAmt.value =  options.DisplaceAmount; //* ( Math.max( 0.5,1.0 + Math.sin(time * 0.001)));
+            heightMapMesh.material.uniforms.heightMapMix.value = options.HeightMapMix;
+            rotateHM(options.RotateVal);
+
+            renderer.render(scene, camera);
+        }
+
+        function onWindowResize( event ){
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+
+            renderer.setSize( window.innerWidth, window.innerHeight );
+        }
+
+        //rotates the height map 
+        function rotateHM( rotateVal ){
+            heightMapMesh.rotation.x += rotateVal;
+            waterMesh.rotation.x += rotateVal;
+            heightMapMesh.rotation.y += rotateVal;
+            waterMesh.rotation.y += rotateVal;
+        }
+    </script>
+</body>
+</html>
